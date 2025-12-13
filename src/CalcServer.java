@@ -12,8 +12,6 @@ public class CalcServer {
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
             while (true) {
                 Socket clientSocket = serverSocket.accept();
-                log("connect.log", "Client connected: " + clientSocket.getInetAddress());
-
                 Thread t = new Thread(new ClientHandler(clientSocket));
                 t.start();
             }
@@ -22,7 +20,7 @@ public class CalcServer {
         }
     }
 
-    //  LOG FUNCTION 
+    //  lOG FUNCTION 
     public static void log(String filename, String msg) {
         try (FileWriter fw = new FileWriter(filename, true)) {
             fw.write("[" + timestamp() + "] " + msg + "\n");
@@ -34,68 +32,61 @@ public class CalcServer {
     }
 }
 
-
-
 class ClientHandler implements Runnable {
     private Socket socket;
 
-    public ClientHandler(Socket socket) {
-        this.socket = socket;
-    }
+    public ClientHandler(Socket socket) { this.socket = socket; }
 
     @Override
     public void run() {
         String clientName = "Unknown";
 
-        try (
-                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                PrintWriter out = new PrintWriter(socket.getOutputStream(), true)
-        ) {
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+             PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+
             // ask client for name
             out.println("Enter your name:");
             clientName = in.readLine();
-            if (clientName == null || clientName.trim().isEmpty()) {
-                clientName = "Unknown";
-            }
-
-            CalcServer.log("connect.log", "Client connected: " + clientName + " (" + socket.getInetAddress() + ")");
-            out.println("Welcome, " + clientName + "! Send calculations or type EXIT to quit.");
+            if (clientName == null || clientName.trim().isEmpty()) clientName = "Unknown";
+            out.println("Welcome, " + clientName + "! Choose operations or type EXIT to quit.");
 
             String line;
             while (true) {
+                out.println("\nAvailable operations:");
+                out.println("Binary: ADD, SUB, MUL, DIV, POW, MOD, MAX, MIN, AVERAGE");
+                out.println("Unary: SQRT, ABS, FACT, SIN, COS, TAN");
+                out.println("Enter OPERATION:");
                 line = in.readLine();
+
                 if (line == null || line.equalsIgnoreCase("EXIT")) {
                     out.println("Goodbye, " + clientName + "!");
                     CalcServer.log("connect.log", "Client disconnected: " + clientName + " (" + socket.getInetAddress() + ")");
                     break;
                 }
 
-                String line1 = line;
-                String line2 = in.readLine();
-                String line3 = in.readLine();
+                String op = line.trim().toUpperCase();
+                out.println("Enter ARG1:");
+                String arg1Line = in.readLine();
+                Double arg1 = parseDouble(arg1Line, out);
+                Double arg2 = null;
 
-                double n1, n2;
-                String op;
-
-                try {
-                    n1 = parseNumber(line1, out);
-                    n2 = parseNumber(line2, out);
-                    op = parseOperator(line3, out);
-                } catch (RuntimeException e) {
-                    continue;
+                if (isBinary(op)) {
+                    out.println("Enter ARG2:");
+                    String arg2Line = in.readLine();
+                    arg2 = parseDouble(arg2Line, out);
                 }
 
-                double result;
                 try {
-                    result = compute(n1, n2, op);
+                    double result = compute(op, arg1, arg2);
+                    out.println("RESULT:" + result);
+                    CalcServer.log("operations.log", clientName + " (" + socket.getInetAddress() + "): " +
+                            op + " " + arg1 + ((arg2 != null) ? ", " + arg2 : "") + " = " + result);
                 } catch (ArithmeticException e) {
-                    out.println("ERROR: Division by zero");
-                    CalcServer.log("error.log", "Division by zero from client " + clientName + " (" + socket.getInetAddress() + ")");
-                    continue;
+                    out.println("ERROR:" + e.getMessage());
+                    CalcServer.log("error.log", "Client " + clientName + " (" + socket.getInetAddress() + ") error: " + e.getMessage());
+                } catch (RuntimeException e) {
+                    out.println("ERROR: Unknown operation");
                 }
-
-                out.println("RESULT:" + result);
-                CalcServer.log("operations.log", clientName + " (" + socket.getInetAddress() + "): " + n1 + " " + op + " " + n2 + " = " + result);
             }
 
         } catch (IOException e) {
@@ -103,39 +94,47 @@ class ClientHandler implements Runnable {
         }
     }
 
-    private double parseNumber(String line, PrintWriter out) {
+    private boolean isBinary(String op) {
+        return switch (op) {
+            case "ADD","SUB","MUL","DIV","POW","MOD","MAX","MIN","AVERAGE" -> true;
+            default -> false;
+        };
+    }
+
+    private Double parseDouble(String line, PrintWriter out) {
         try {
-            String[] parts = line.split(":");
-            if (parts.length < 2) throw new Exception();
-            return Double.parseDouble(parts[1].trim());
+            return Double.parseDouble(line.trim());
         } catch (Exception e) {
             out.println("ERROR: Invalid number");
             throw new RuntimeException("Invalid number");
         }
     }
 
-    private String parseOperator(String line, PrintWriter out) {
-        try {
-            String[] parts = line.split(":");
-            if (parts.length < 2) throw new Exception();
-            String op = parts[1].trim();
-            if (!op.matches("[+\\-*/]")) throw new Exception();
-            return op;
-        } catch (Exception e) {
-            out.println("ERROR: Invalid operator");
-            throw new RuntimeException("Invalid operator");
+    private double compute(String op, double a, Double b) {
+        switch(op) {
+            case "ADD": return a + b;
+            case "SUB": return a - b;
+            case "MUL": return a * b;
+            case "DIV": if (b == 0) throw new ArithmeticException("Division by zero"); return a / b;
+            case "POW": return Math.pow(a, b);
+            case "MOD": return a % b;
+            case "MAX": return Math.max(a, b);
+            case "MIN": return Math.min(a, b);
+            case "AVERAGE": return (a + b)/2;
+            case "SQRT": if(a<0) throw new ArithmeticException("SQRT of negative"); return Math.sqrt(a);
+            case "ABS": return Math.abs(a);
+            case "FACT": return factorial((int)a);
+            case "SIN": return Math.sin(a);
+            case "COS": return Math.cos(a);
+            case "TAN": return Math.tan(a);
+            default: throw new RuntimeException("Unknown operation");
         }
     }
 
-    private double compute(double a, double b, String op) {
-        switch (op) {
-            case "+": return a + b;
-            case "-": return a - b;
-            case "*": return a * b;
-            case "/":
-                if (b == 0) throw new ArithmeticException();
-                return a / b;
-            default: throw new RuntimeException("Unknown operator");
-        }
+    private long factorial(int n) {
+        if (n < 0) throw new ArithmeticException("Factorial of negative number");
+        long f = 1;
+        for (int i = 2; i <= n; i++) f *= i;
+        return f;
     }
 }

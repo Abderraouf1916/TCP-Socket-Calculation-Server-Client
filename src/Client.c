@@ -1,149 +1,139 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
-
 #pragma comment(lib, "ws2_32.lib")
+#else
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#endif
 
-#define PORT 17070
 #define BUFFER_SIZE 1024
 
-//   function to read a line 
-int recvLine(SOCKET sock, char *buffer, int maxlen) {
+// Checks if operation is binary
+int isBinary(const char *op) {
+    const char *binaryOps[] = {"ADD","SUB","MUL","DIV","POW","MOD","MAX","MIN","AVERAGE"};
+    for(int i=0;i<10;i++)
+        if(strcmp(op,binaryOps[i])==0) return 1;
+    return 0;
+}
+
+// Send message with newline
+void sendLine(int sock, const char *msg) {
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "%s\n", msg);
+#ifdef _WIN32
+    send(sock, buffer, (int)strlen(buffer), 0);
+#else
+    send(sock, buffer, strlen(buffer), 0);
+#endif
+}
+
+int recvLine(int sock, char *buf, int size){
     int i = 0;
     char c;
-    int n;
-    while (i < maxlen - 1) {
-        n = recv(sock, &c, 1, 0);
-        if (n <= 0) return n;
-         // disconnected
-        if (c == '\n') break;
-        buffer[i++] = c;
+    while(i < size - 1){
+        int n = recv(sock, &c, 1, 0);
+        if(n <= 0) return n; // disconnected
+        if(c == '\n') break;
+        buf[i++] = c;
     }
-    buffer[i] = '\0';
+    buf[i] = '\0';
     return i;
 }
 
 int main() {
-    WSADATA wsaData;
-    SOCKET sock = INVALID_SOCKET;
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2,2), &wsa);
+#endif
+
+    char hostname[256] = "localhost"; 
+    int port = 5000;                     
+
     struct sockaddr_in server_addr;
-    char buffer[BUFFER_SIZE];
-    char input1[50], input2[50], op[5], name[50];
+    struct hostent *he;
 
-    // Initialize Winsock
-    if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0) {
-        printf("WSAStartup failed.\n");
-        return 1;
-    }
+#ifdef _WIN32
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+#else
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+#endif
+    if(sock < 0){ perror("Socket error"); return 1; }
 
-    // create socket
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == INVALID_SOCKET) {
-        printf("Socket creation failed: %d\n", WSAGetLastError());
-        WSACleanup();
-        return 1;
-    }
+    he = gethostbyname(hostname);
+    if(he == NULL){ perror("gethostbyname error"); return 1; }
 
-    struct addrinfo hints, *res;
-memset(&hints, 0, sizeof(hints));
-hints.ai_family = AF_INET;
-hints.ai_socktype = SOCK_STREAM;
-
-if (getaddrinfo("6.tcp.eu.ngrok.io", NULL, &hints, &res) != 0) {
-    printf("Failed to resolve hostname.\n");
-    closesocket(sock);
-    WSACleanup();
-    return 1;
-}
-
+    memset(&server_addr,0,sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
-server_addr.sin_addr = ((struct sockaddr_in *)res->ai_addr)->sin_addr;
+    server_addr.sin_port = htons(port);
+    memcpy(&server_addr.sin_addr, he->h_addr_list[0], he->h_length);
 
-    // connect to server
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        printf("Connection failed: %d\n", WSAGetLastError());
-        closesocket(sock);
-        WSACleanup();
-        return 1;
+    if(connect(sock,(struct sockaddr*)&server_addr,sizeof(server_addr))<0){
+        perror("Connect error"); return 1; 
     }
 
-    // read "Enter your name:" 
-    if (recvLine(sock, buffer, sizeof(buffer)) <= 0) {
-        printf("Server disconnected.\n");
-        closesocket(sock);
-        WSACleanup();
-        return 1;
-    }
+    char buffer[BUFFER_SIZE];
+
+    if(recvLine(sock, buffer, BUFFER_SIZE)<=0){ printf("Server disconnected.\n"); goto end; }
     printf("%s\n", buffer);
 
-    // send client name
-    printf("Enter your name: ");
+    char name[50];
     fgets(name, sizeof(name), stdin);
-    name[strcspn(name, "\n")] = 0;
-    send(sock, name, (int)strlen(name), 0);
-    send(sock, "\n", 1, 0); 
+    name[strcspn(name,"\n")] = 0;
+    sendLine(sock, name);
 
-    // read welcome message
-    if (recvLine(sock, buffer, sizeof(buffer)) <= 0) {
-        printf("Server disconnected.\n");
-        closesocket(sock);
-        WSACleanup();
-        return 1;
-    }
+    if(recvLine(sock, buffer, BUFFER_SIZE)<=0){ printf("Server disconnected.\n"); goto end; }
     printf("%s\n", buffer);
 
-    //  calculation loop 
-    while (1) {
-        // read number 1
-        printf("Enter number 1 (or EXIT to quit): ");
-        fgets(input1, sizeof(input1), stdin);
-        input1[strcspn(input1, "\n")] = 0;
+    while(1){
+        if(recvLine(sock, buffer, BUFFER_SIZE)<=0){ printf("Server disconnected.\n"); break; }
+        printf("%s\n> ", buffer);
 
-        if (_stricmp(input1, "EXIT") == 0) {
-            send(sock, "EXIT\n", 5, 0);
+        char op[20];
+        fgets(op, sizeof(op), stdin);
+        op[strcspn(op,"\n")] = 0;
+        if(strcmp(op,"EXIT")==0){
+            sendLine(sock,"EXIT");
             printf("Disconnected from server.\n");
             break;
         }
+        sendLine(sock, op);
 
-        // read number 2
-        printf("Enter number 2: ");
-        fgets(input2, sizeof(input2), stdin);
-        input2[strcspn(input2, "\n")] = 0;
+        // arg1
+        if(recvLine(sock, buffer, BUFFER_SIZE)<=0){ printf("Server disconnected.\n"); break; }
+        printf("%s\n> ", buffer);
+        char arg1[50];
+        fgets(arg1,sizeof(arg1),stdin);
+        arg1[strcspn(arg1,"\n")]=0;
+        sendLine(sock,arg1);
 
-        // read operator
-        printf("Enter operator (+, -, *, /): ");
-        fgets(op, sizeof(op), stdin);
-        op[strcspn(op, "\n")] = 0;
-
-        // send calculation to server
-        snprintf(buffer, sizeof(buffer), "NUMBER:%s\n", input1);
-        send(sock, buffer, (int)strlen(buffer), 0);
-
-        snprintf(buffer, sizeof(buffer), "NUMBER:%s\n", input2);
-        send(sock, buffer, (int)strlen(buffer), 0);
-
-        snprintf(buffer, sizeof(buffer), "OPERATOR:%s\n", op);
-        send(sock, buffer, (int)strlen(buffer), 0);
-
-        // receive server response
-        if (recvLine(sock, buffer, sizeof(buffer)) <= 0) {
-            printf("Server disconnected.\n");
-            break;
+        // arg2 
+        if(isBinary(op)){
+            if(recvLine(sock, buffer, BUFFER_SIZE)<=0){ printf("Server disconnected.\n"); break; }
+            printf("%s\n> ", buffer);
+            char arg2[50];
+            fgets(arg2,sizeof(arg2),stdin);
+            arg2[strcspn(arg2,"\n")]=0;
+            sendLine(sock,arg2);
         }
 
-        if (strncmp(buffer, "RESULT:", 7) == 0) {
-            printf("Server result = %s\n", buffer + 7);
-        } else if (strncmp(buffer, "ERROR:", 6) == 0) {
-            printf("Server error = %s\n", buffer + 6);
-        } else {
-            printf("Invalid response from server: %s\n", buffer);
-        }
+        //  result
+        if(recvLine(sock, buffer, BUFFER_SIZE)<=0){ printf("Server disconnected.\n"); break; }
+        printf("%s\n", buffer);
     }
 
+end:
+#ifdef _WIN32
     closesocket(sock);
     WSACleanup();
+#else
+    close(sock);
+#endif
     return 0;
 }
